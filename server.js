@@ -122,17 +122,17 @@ app.put('/api/v1/clients/:id', (req, res) => {
   }
 
   let { status, priority } = req.body;
+  if (!status || !priority) {
+    return res.status(400).send({ error: 'Missing required parameters' });
+  }
   let clients = db.prepare('select * from clients').all();
   const client = clients.find(client => client.id === id);
   if (!validatePriority(priority)) {
     return res.status(400).send(validatePriority(priority).messageObj);
   }
-  const changed_clients = db.prepare('select * from clients where status = ?' ).all(status);
-  for (let i = priority; i <= changed_clients.length; i++) {
-    const target = db.prepare('select * from clients where priority = ? AND status = ?').get(i, status);
-    db.prepare('update clients set priority = ? where id = ?').run(i+1, target.id);
-  }
   /* ---------- Update code below ----------*/
+  const oldState = client.status;
+  const oldPriority = client.priority;
   if (status) {
     // status can only be either 'backlog' | 'in-progress' | 'complete'
     if (status !== 'backlog' && status !== 'in-progress' && status !== 'complete') {
@@ -141,10 +141,47 @@ app.put('/api/v1/clients/:id', (req, res) => {
         'long_message': 'Status can only be one of the following: [backlog | in-progress | complete].',
       });
     }
-    db.prepare('update clients set status = ?, priority = ? where id = ?').run(status, id);
-    const clients = db.prepare('select * from clients where status = ?' ).all(status);
-    console.log(clients);
-    return res.status(200).send(clients);
+    if(status === oldState && priority === oldPriority) {
+      return res.status(200).send(clients);
+    }
+    if (status === oldState && priority !== oldPriority) {
+      const filteredClients = clients.filter(client => client.status === status);
+      const sortedClients = filteredClients.sort((a, b) => a.priority - b.priority);
+      const targetIndex = sortedClients.findIndex(client => client.id === id);
+      const item = sortedClients.splice(targetIndex, 1)[0];
+      sortedClients.splice(Number(priority)-1, 0, item);
+      for (let i = 0; i < sortedClients.length; i++) {
+        sortedClients[i].priority = Number(i)+1;
+      }
+
+      sortedClients.push(item);
+      for (let i = 0; i < sortedClients.length; i++) {
+        db.prepare('update clients set priority = ? where id = ?').run(sortedClients[i].priority, sortedClients[i].id);
+      }
+      clients = db.prepare('select * from clients').all();
+      return res.status(200).send(clients);
+    }
+    else{
+      const old_filteredClients = clients.filter(client => client.status === oldState);
+      const old_sortedClients = old_filteredClients.sort((a, b) => a.priority - b.priority);
+      const targetIndex = old_sortedClients.findIndex(client => client.id === id);
+      const item = old_sortedClients.splice(targetIndex, 1)[0];
+      for (let i = 0; i < old_sortedClients.length; i++) {
+        db.prepare('update clients set priority = ? where id = ?').run(i+1, old_sortedClients[i].id);
+      }
+      const new_filteredClients = clients.filter(client => client.status === status);
+      const new_sortedClients = new_filteredClients.sort((a, b) => a.priority - b.priority);
+      new_sortedClients.splice(Number(priority)-1, 0, item);
+
+      for (let i = 0; i < new_sortedClients.length; i++) {
+        db.prepare('update clients set status = ?, priority = ? where id = ?').run(status,i+1, new_sortedClients[i].id);
+      }
+      console.log(old_sortedClients);
+      console.log(new_sortedClients);
+      clients = db.prepare('select * from clients' ).all();
+      return res.status(200).send(clients);
+    }
+
   }
   return res.status(200).send(clients);
 });
